@@ -212,6 +212,13 @@ CONF = {
     "lx_enabled": os.environ.get("FNMUSIC_LX_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
     "netease_direct_play": os.environ.get("FNMUSIC_NETEASE_DIRECT_PLAY", "false").strip().lower() in ("true", "1", "yes", "on"),
     "musicdl_direct_play": os.environ.get("FNMUSIC_MUSICDL_DIRECT_PLAY", "false").strip().lower() in ("true", "1", "yes", "on"),
+    # 第四音源：go-music-dl（QQ/B站/汽水等，直连各平台官方接口）。
+    # sidecar 形态：适配层 gomusicdl-service 暴露与 musicdl-service 同契约的
+    # /search /info /stream，由 FNMUSIC_GOMUSICDL_ENABLED 开关启用。
+    "gomusicdl_url": os.environ.get("FNMUSIC_GOMUSICDL_URL", "http://127.0.0.1:8776"),
+    "gomusicdl_enabled": os.environ.get("FNMUSIC_GOMUSICDL_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
+    # 由 gomusicdl 提供的曲目来源集合（用于路由 guid → gomusicdl 服务）
+    "gomusicdl_sources": os.environ.get("FNMUSIC_GOMUSICDL_SOURCES", "qq,bilibili,soda"),
     # 实验开关：新版 musicdl 官方聚合搜索。代理只按它清搜索缓存，不改请求目标。
     "musicdl_official_search": _initial_musicdl_official_search(),
     "lx_direct_play": os.environ.get("FNMUSIC_LX_DIRECT_PLAY", "false").strip().lower() in ("true", "1", "yes", "on"),
@@ -617,6 +624,7 @@ def reset_source_search_gates() -> None:
 
 _LX_SEARCH_GATE = SourceSearchGate(cancellable=True)
 _MUSICDL_SEARCH_GATE = SourceSearchGate(cancellable=False)
+_GOMUSICDL_SEARCH_GATE = SourceSearchGate(cancellable=False)
 _NETEASE_SEARCH_GATE = SourceSearchGate(cancellable=False)
 _MUSICBOX_SEARCH_GATE = _NETEASE_SEARCH_GATE
 
@@ -665,6 +673,8 @@ def _set_search_cache(keyword: str, entry: dict) -> None:
 # 已白名单化热重载；其余路径/端口类配置不在白名单，仍需重启。
 _ENV_WATCH_KEYS: dict[str, tuple[str, str]] = {
     "FNMUSIC_MUSICDL_ENABLED": ("musicdl_enabled", "bool"),
+    "FNMUSIC_GOMUSICDL_ENABLED": ("gomusicdl_enabled", "bool"),
+    "FNMUSIC_GOMUSICDL_SOURCES": ("gomusicdl_sources", "str"),
     "FNMUSIC_NETEASE_ENABLED": ("netease_enabled", "bool"),
     "FNMUSIC_LX_ENABLED": ("lx_enabled", "bool"),
     "FNMUSIC_NETEASE_DIRECT_PLAY": ("netease_direct_play", "direct_bool"),
@@ -1073,7 +1083,7 @@ def effective_download_quality_conf() -> str:
     }
     return qp.effective_download_quality(values)
 _SOURCE_CONF_KEYS = {
-    "musicdl_enabled", "netease_enabled", "lx_enabled", "online_sources", "lx_sources",
+    "musicdl_enabled", "netease_enabled", "lx_enabled", "gomusicdl_enabled", "online_sources", "lx_sources",
     "lx_source_url", "lx_source_list",
 }
 _DIRECT_PLAY_CONF_KEYS = {
@@ -1365,13 +1375,36 @@ def _netease_runtime_usable() -> bool:
     return bool(CONF.get("netease_enabled")) or bool(CONF.get("netease_playlist_resident"))
 
 
+# 与 gomusicdl-service 的 DEFAULT_SOURCES 保持一致：启用但没配平台时按默认白名单
+# 服务，避免"开了音源但一条结果都路由不出去"的静默失效。
+_GOMUSICDL_DEFAULT_SOURCES = ("qq", "bilibili", "soda")
+
+
+def _gomusicdl_source_set() -> set[str]:
+    """gomusicdl（go-music-dl sidecar）提供的曲目来源集合（小写规范）。"""
+    raw = {s.strip().lower() for s in str(CONF.get("gomusicdl_sources") or "").split(",") if s.strip()}
+    return raw or set(_GOMUSICDL_DEFAULT_SOURCES)
+
+
+def _gomusicdl_serves(source: str) -> bool:
+    """该曲目来源是否由 gomusicdl sidecar 服务（而非 musicdl）。
+
+    与 _open_online_stream / _fetch_online_info 的分流判据保持一致：
+    只要 gomusicdl 启用且声明了该平台，请求就发往 gomusicdl 适配层。
+    """
+    return bool(CONF.get("gomusicdl_enabled")) and source in _gomusicdl_source_set()
+
+
 def _source_enabled(guid: str) -> bool:
     source = source_from_online_guid(guid)
     if source == "netease":
         if not _netease_runtime_usable():
             return False
-    elif not CONF.get({"lx": "lx_enabled"}.get(source, "musicdl_enabled")):
-        return False
+    else:
+        # gomusicdl（go-music-dl sidecar）可服务的源由独立开关约束；
+        # 未启用 gomusicdl 时回退 musicdl 启用位（两引擎可重叠提供同一平台，如 qq）。
+        if not _gomusicdl_serves(source) and not CONF.get({"lx": "lx_enabled"}.get(source, "musicdl_enabled")):
+            return False
     if source == "lx":
         # lx 平台白名单（online:lx:<platform>:<id>）；未配置 = 跟随 lx 服务全部已启用平台
         selected = CONF.get("lx_sources") or []
@@ -1381,7 +1414,10 @@ def _source_enabled(guid: str) -> bool:
         return True
     if source != "netease" and CONF.get("online_sources"):
         selected = {name.strip().lower().removesuffix("musicclient") for name in str(CONF["online_sources"]).split(",")}
-        return source.lower() in selected
+        if source.lower() in selected:
+            return True
+        # gomusicdl 源不受 musicdl 平台白名单约束（启用位已在上面校验）
+        return _gomusicdl_serves(source)
     return True
 
 
@@ -1668,6 +1704,9 @@ def source_from_online_guid(guid: str) -> str:
 # 多源同时激活且平台无法唯一归属某脚本时脚本名退 "lx"；平台未知回退备注名/[lx]
 _SOURCE_TAG_NETEASE = "[music box] "
 _SOURCE_TAG_MUSICDL = "[dl] "
+# gomusicdl（go-music-dl sidecar）来源：与 musicdl 分开标注，避免用户把 QQ/B站
+# 曲目误认成 musicdl 聚合结果。
+_SOURCE_TAG_GOMUSICDL = "[go] "
 _SOURCE_TAG_LX_FALLBACK = "[lx] "
 # issue #57：无 VIP 权益账号的网易 VIP 曲目展示标记（点播只有试听，给用户预期）。
 # 独立于来源标记：所有出口的 VO 都可携带；入库/收藏命名前经 strip_source_tag 剥离。
@@ -1833,6 +1872,8 @@ def source_display_prefix(src: str, item: dict | None = None) -> str:
             return f"[{script or 'lx'}-{platform}] "
         remark = _lx_source_remark()
         return f"[{remark}] " if remark else _SOURCE_TAG_LX_FALLBACK
+    if s and _gomusicdl_serves(s):
+        return _SOURCE_TAG_GOMUSICDL
     if s:
         return _SOURCE_TAG_MUSICDL
     return ""
@@ -1845,8 +1886,8 @@ def strip_source_tag(title: str) -> str:
     有界循环剥离（最多 3 层）：[VIP] 与来源标记可叠加（如 "[music box] [VIP] x"），
     业务命名前必须剥净。"""
     t = str(title or "")
-    candidates = [_SOURCE_TAG_NETEASE, _SOURCE_TAG_MUSICDL, _SOURCE_TAG_LX_FALLBACK,
-                  _SOURCE_TAG_VIP, *_LX_DISPLAY_TAGS]
+    candidates = [_SOURCE_TAG_NETEASE, _SOURCE_TAG_MUSICDL, _SOURCE_TAG_GOMUSICDL,
+                  _SOURCE_TAG_LX_FALLBACK, _SOURCE_TAG_VIP, *_LX_DISPLAY_TAGS]
     script_parts = {"lx", *_LX_SCRIPT_MAP_CACHE["by_platform"].values()}
     for entry in _lx_source_entries():
         name = str(entry.get("name") or "").strip()
@@ -3562,6 +3603,14 @@ def get_musicdl_client(fastapi_app: FastAPI) -> httpx.AsyncClient:
     return client
 
 
+def get_gomusicdl_client(fastapi_app: FastAPI) -> httpx.AsyncClient:
+    client = getattr(fastapi_app.state, "gomusicdl_client", None)
+    if client is None:
+        client = httpx.AsyncClient(base_url=CONF["gomusicdl_url"], timeout=45.0)
+        fastapi_app.state.gomusicdl_client = client
+    return client
+
+
 def get_netease_client(fastapi_app: FastAPI) -> httpx.AsyncClient:
     fn = globals().get("get_musicbox_client")
     if fn is not None and fn is not get_netease_client:
@@ -3737,6 +3786,40 @@ async def fetch_musicdl_search(client: httpx.AsyncClient, keyword: str, limit: i
         return data
 
     return await _MUSICDL_SEARCH_GATE.run(scope, keyword, _query)
+
+
+async def fetch_gomusicdl_search(client: httpx.AsyncClient, keyword: str, limit: int, sources: str | None = None) -> dict | None:
+    """go-music-dl 适配层搜索：契约与 musicdl-service 一致（items/errors）。"""
+    if not keyword:
+        return None
+    scope = _FETCH_SCOPE.get()
+
+    async def _fetch_once(params: dict[str, Any], timeout: float) -> dict | None:
+        try:
+            r = await client.get("/search", params=params, timeout=timeout)
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, dict):
+                    raw_items = data.get("items")
+                    if isinstance(raw_items, list):
+                        data["items"] = [it for it in raw_items if is_playable_online_track(it)]
+                    return data
+            fn_diag(logger, "search_transport", id=_SEARCH_DIAG_ID.get(),
+                    source="gomusicdl", http_status=r.status_code)
+        except Exception as e:
+            fn_diag(logger, "search_transport", id=_SEARCH_DIAG_ID.get(),
+                    source="gomusicdl", error=type(e).__name__)
+        return None
+
+    async def _query():
+        params: dict[str, Any] = {"keyword": keyword, "limit": limit}
+        selected = (sources or ",".join(sorted(_gomusicdl_source_set())) or "").strip()
+        if selected:
+            params["sources"] = selected
+        timeout = max(1.0, float(CONF.get("search_timeout") or 15))
+        return await _fetch_once(params, timeout)
+
+    return await _GOMUSICDL_SEARCH_GATE.run(scope, keyword, _query)
 
 
 async def fetch_netease_search(client: httpx.AsyncClient, keyword: str, limit: int, offset: int = 0) -> list[dict] | None:
@@ -6147,6 +6230,7 @@ async def lifespan(fastapi_app: FastAPI):
     liked_task = None
     created_upstream = False
     created_musicdl = False
+    created_gomusicdl = False
     created_musicbox = False
     created_lx = False
     created_llm = False
@@ -6165,6 +6249,13 @@ async def lifespan(fastapi_app: FastAPI):
             timeout=45.0,
         )
         created_musicdl = True
+
+    if CONF.get("gomusicdl_enabled") and getattr(fastapi_app.state, "gomusicdl_client", None) is None:
+        fastapi_app.state.gomusicdl_client = httpx.AsyncClient(
+            base_url=CONF["gomusicdl_url"],
+            timeout=45.0,
+        )
+        created_gomusicdl = True
 
     mb_client = getattr(fastapi_app.state, "musicbox_client", None)
     ne_client = getattr(fastapi_app.state, "netease_client", None)
@@ -6307,6 +6398,9 @@ async def lifespan(fastapi_app: FastAPI):
         if created_musicdl and getattr(fastapi_app.state, "musicdl_client", None):
             await fastapi_app.state.musicdl_client.aclose()
             fastapi_app.state.musicdl_client = None
+        if created_gomusicdl and getattr(fastapi_app.state, "gomusicdl_client", None):
+            await fastapi_app.state.gomusicdl_client.aclose()
+            fastapi_app.state.gomusicdl_client = None
         if created_musicbox:
             c = getattr(fastapi_app.state, "netease_client", None) or getattr(fastapi_app.state, "musicbox_client", None)
             if c:
@@ -6441,6 +6535,7 @@ async def ext_healthz(request: Request):
 
     checks = [("upstream", True, get_upstream_client, "/music/api/v1/search/track?keyword=healthz_probe"),
               ("musicdl", CONF.get("musicdl_enabled"), get_musicdl_client, "/healthz"),
+              ("gomusicdl", CONF.get("gomusicdl_enabled"), get_gomusicdl_client, "/healthz"),
               # 网易云歌单常驻：netease 非当前音源时仍是健康检查的一部分（issue #38）
               ("netease", _netease_runtime_usable(), get_netease_client, "/healthz"),
               ("lxmusic", CONF.get("lx_enabled"), get_lx_client, "/healthz")]
@@ -6687,6 +6782,9 @@ async def _aggregate_search(request: Request, keyword: str, entry: dict) -> None
     if CONF.get("musicdl_enabled"):
         factories.append(lambda: fetch_musicdl_search(get_musicdl_client(request.app), keyword, CONF["online_limit"]))
         factory_names[factories[-1]] = "musicdl"
+    if CONF.get("gomusicdl_enabled"):
+        factories.append(lambda: fetch_gomusicdl_search(get_gomusicdl_client(request.app), keyword, CONF["online_limit"]))
+        factory_names[factories[-1]] = "gomusicdl"
     if CONF.get("lx_enabled"):
         factories.append(lambda: fetch_lx_search(get_lx_client(request.app), keyword, CONF["lx_search_limit"]))
         factory_names[factories[-1]] = "lxmusic"
@@ -8351,6 +8449,8 @@ async def _recover_source(request: Request, guid: str, entry: dict | None) -> bo
             parts = guid.split(":")
             coro = fetch_lx_search(get_lx_client(request.app), keyword, CONF["lx_search_limit"],
                                    sources=[parts[2]] if len(parts) >= 4 else None)
+        elif source in _gomusicdl_source_set() and CONF.get("gomusicdl_enabled"):
+            coro = fetch_gomusicdl_search(get_gomusicdl_client(request.app), keyword, CONF["online_limit"], source)
         else:
             selected = [name.strip() for name in str(CONF.get("online_sources") or "").split(",")
                         if name.strip().lower().removesuffix("musicclient") == source.lower()]
@@ -8486,16 +8586,26 @@ async def _open_online_stream(request: Request, guid: str, range_header: str | N
             client = owned
             req = client.build_request("GET", url, headers=headers)
         else:
-            client = get_musicdl_client(request.app)
-            via_musicdl = True
+            # go-music-dl 源（QQ/B站/汽水等）：适配层 /stream 自带各源鉴权头、
+            # 汽水/咪咕解密与 Range 支持；不参与 musicdl 的 mp3 强制降档协议。
+            via_gomusicdl = source in _gomusicdl_source_set() and bool(CONF.get("gomusicdl_enabled"))
+            if via_gomusicdl:
+                client = get_gomusicdl_client(request.app)
+                # go 侧按原文件直出、不做服务端透明降档，扩展名以适配层声明为准，
+                # 不能套用 musicdl 的 "content-type=mpeg 就改 .mp3" 修正。
+                via_musicdl = False
+            else:
+                client = get_musicdl_client(request.app)
+                via_musicdl = True
             params = {"id": song_id_from_online_guid(guid), "proxy": "true"}
             # musicdl 只声明 mp3 强制降档能力；七档低目标再由本地真实编码率处理。
             target_q = qp.normalize_quality(quality_override) if quality_override else None
-            if purpose == "download" and target_q in ("standard", "higher", "exhigh"):
+            if purpose == "download" and target_q in ("standard", "higher", "exhigh") and not via_gomusicdl:
                 params["quality"] = "mp3"
                 actual_quality = _netease_quality_evidence(info or {})
             # 损坏无损流的播放回退仍只影响当前播放请求。
-            elif purpose != "download" and (force_mp3 or _lossless_is_blacklisted(guid)) and not range_header:
+            elif (purpose != "download" and (force_mp3 or _lossless_is_blacklisted(guid))
+                  and not range_header and not via_gomusicdl):
                 params["quality"] = "mp3"
             req = client.build_request("GET", "/stream", params=params, headers=headers)
         try:
@@ -8936,6 +9046,13 @@ async def _direct_redirect_response(request: Request, guid: str) -> Response | N
     range_header = request.headers.get("range")
     if request.query_params.get("_ext_hls_stub") == "1":
         fn_diag(logger, "direct_bypassed", guid=guid, reason="hls_stub")
+        return None
+    if provider == "musicdl" and _gomusicdl_serves(source):
+        # gomusicdl 源不参与 musicdl 的 /internal/resolve 直连协议：切到 gomusicdl
+        # 后 musicdl 进程是停止的，而"musicdl 播放直连"是独立的 .env 开关，可能
+        # 仍是上次留下的 true——继续走这条路径会 502。统一回落到 gomusicdl 的
+        # 流式透传（/stream 自带各源鉴权、解密与 Range）。
+        fn_diag(logger, "direct_bypassed", guid=guid, reason="gomusicdl_stream_only")
         return None
     if not CONF.get(_DIRECT_PLAY_CONF_KEYS[provider]):
         if _nonzero_range(range_header) and _DIRECT_TARGET_BINDINGS.known(scope, guid):
@@ -11643,8 +11760,18 @@ async def _fetch_online_info(request: Request, guid: str, include_lyric: bool = 
             logger.warning("lxmusic /info failed for %s: %s", guid, e)
         return None
 
-    musicdl_client = get_musicdl_client(request.app)
     song_id = song_id_from_online_guid(guid)
+    if source_from_online_guid(guid) in _gomusicdl_source_set() and CONF.get("gomusicdl_enabled"):
+        try:
+            r = await get_gomusicdl_client(request.app).get("/info", params={"id": song_id}, timeout=10.0)
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, dict) and data.get("ok") is not False:
+                    return data
+        except Exception as e:
+            logger.warning("gomusicdl /info failed for %s: %s", guid, e)
+        return None
+    musicdl_client = get_musicdl_client(request.app)
     try:
         r = await musicdl_client.get("/info", params={"id": song_id}, timeout=10.0)
         if r.status_code == 200:
@@ -15179,6 +15306,10 @@ async def _aggregate_album_search_rows(request: Request, keyword: str, limit: in
     jobs: list = []
     if CONF.get("musicdl_enabled"):
         jobs.append(("musicdl", get_musicdl_client(request.app).get(
+            "/search", params={"keyword": keyword, "limit": 20}, timeout=6.0,
+        )))
+    if CONF.get("gomusicdl_enabled"):
+        jobs.append(("gomusicdl", get_gomusicdl_client(request.app).get(
             "/search", params={"keyword": keyword, "limit": 20}, timeout=6.0,
         )))
     if CONF.get("lx_enabled"):

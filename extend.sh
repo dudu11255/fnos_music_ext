@@ -18,6 +18,7 @@ UPSTREAM_SOCK="/var/run/trim_music_upstream.socket"
 MUSICDL_URL="http://127.0.0.1:8768"
 MUSICBOX_URL="http://127.0.0.1:8770"
 LX_URL="http://127.0.0.1:8772"
+GOMUSICDL_URL="http://127.0.0.1:8776"
 FORCE_RELOAD=0
 ADOPT=0
 
@@ -147,13 +148,16 @@ FNMUSIC_VERSION="${FNMUSIC_VERSION:-0.0.0}"
 MUSICDL_URL="${FNMUSIC_MUSICDL_URL:-${MUSICDL_URL}}"
 MUSICBOX_URL="${FNMUSIC_MUSICBOX_URL:-${MUSICBOX_URL}}"
 LX_URL="${FNMUSIC_LX_URL:-${LX_URL}}"
+GOMUSICDL_URL="${FNMUSIC_GOMUSICDL_URL:-${GOMUSICDL_URL}}"
 ENABLE_MUSICDL=0
 ENABLE_MUSICBOX=0
 ENABLE_LX=0
+ENABLE_GOMUSICDL=0
 ENABLE_WEBUI=0
 is_enabled "${FNMUSIC_MUSICDL_ENABLED:-true}" && ENABLE_MUSICDL=1
 is_enabled "${FNMUSIC_NETEASE_ENABLED:-true}" && ENABLE_MUSICBOX=1
 is_enabled "${FNMUSIC_LX_ENABLED:-false}" && ENABLE_LX=1
+is_enabled "${FNMUSIC_GOMUSICDL_ENABLED:-false}" && ENABLE_GOMUSICDL=1
 is_enabled "${FNMUSIC_WEBUI_ENABLED:-false}" && ENABLE_WEBUI=1
 # 部署形态（v2.8.0a+）：docker（默认，单容器）| native（宿主机 systemd + supervisord）
 DEPLOY_MODE="${FNMUSIC_DEPLOY_MODE:-docker}"
@@ -164,8 +168,9 @@ case "${DEPLOY_MODE}" in
         exit 1
         ;;
 esac
-if [ "${ENABLE_MUSICDL}" -eq 0 ] && [ "${ENABLE_MUSICBOX}" -eq 0 ] && [ "${ENABLE_LX}" -eq 0 ]; then
-    log_err "至少需要启用一个音源（FNMUSIC_MUSICDL_ENABLED / FNMUSIC_NETEASE_ENABLED / FNMUSIC_LX_ENABLED）。"
+if [ "${ENABLE_MUSICDL}" -eq 0 ] && [ "${ENABLE_MUSICBOX}" -eq 0 ] && [ "${ENABLE_LX}" -eq 0 ] \
+   && [ "${ENABLE_GOMUSICDL}" -eq 0 ]; then
+    log_err "至少需要启用一个音源（FNMUSIC_MUSICDL_ENABLED / FNMUSIC_NETEASE_ENABLED / FNMUSIC_LX_ENABLED / FNMUSIC_GOMUSICDL_ENABLED）。"
     exit 1
 fi
 
@@ -315,7 +320,19 @@ verify_acceptance() {
         local source="$1" keyword="$2" encoded
         encoded="$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "${keyword}" 2>/dev/null || true)"
         [ -z "${encoded}" ] && return 0
-        if [ "${source}" = "musicdl" ]; then
+        if [ "${source}" = "gomusicdl" ]; then
+            # go-music-dl：走适配层 /search（契约同 musicdl-service），平台白名单透传
+            local gomd_sources_q=""
+            [ -n "${FNMUSIC_GOMUSICDL_SOURCES:-}" ] && gomd_sources_q="&sources=${FNMUSIC_GOMUSICDL_SOURCES}"
+            curl -s --max-time 20 "${GOMUSICDL_URL}/search?keyword=${encoded}&limit=3${gomd_sources_q}" 2>/dev/null | python3 -c "import sys,json
+try:
+    d=json.load(sys.stdin)
+    for it in (d.get('items') or [])[:3]:
+        i=it.get('id')
+        if i: print(i)
+except Exception:
+    pass" 2>/dev/null || true
+        elif [ "${source}" = "musicdl" ]; then
             # 按用户选择的 musicdl 平台白名单探测（FNMUSIC_ONLINE_SOURCES，空=服务默认白名单）
             local mdl_sources_q=""
             [ -n "${FNMUSIC_ONLINE_SOURCES:-}" ] && mdl_sources_q="&sources=${FNMUSIC_ONLINE_SOURCES}"
@@ -366,6 +383,7 @@ except Exception:
     [ "${ENABLE_MUSICDL}" -eq 1 ] && sources+=("musicdl")
     [ "${ENABLE_MUSICBOX}" -eq 1 ] && sources+=("musicbox")
     [ "${ENABLE_LX}" -eq 1 ] && sources+=("lxmusic")
+    [ "${ENABLE_GOMUSICDL}" -eq 1 ] && sources+=("gomusicdl")
 
     local src kw id
     for src in "${sources[@]}"; do
@@ -438,7 +456,8 @@ fi
 mkdir -p "${BASE_DIR}/sources-data/cache/netease-musicbox" \
     "${BASE_DIR}/sources-data/config/netease-musicbox" \
     "${BASE_DIR}/sources-data/netease-musicbox" \
-    "${BASE_DIR}/sources-data/lxmusic"
+    "${BASE_DIR}/sources-data/lxmusic" \
+    "${BASE_DIR}/sources-data/gomusicdl"
 # 数据卷权限收紧：属主对齐容器 appuser（uid 1000），group/other 全收（凭据防本机其他用户读取）
 # 原生模式以 root 运行音源，不做 uid 对齐（目录布局两形态共用，切换时由 install 重新对齐）
 if [ "${DEPLOY_MODE}" = "docker" ]; then
@@ -462,6 +481,7 @@ need_start=0
 if [ "${ENABLE_MUSICDL}" -eq 1 ] && ! source_healthy "${MUSICDL_URL}"; then need_start=1; fi
 if [ "${ENABLE_MUSICBOX}" -eq 1 ] && ! source_healthy "${MUSICBOX_URL}"; then need_start=1; fi
 if [ "${ENABLE_LX}" -eq 1 ] && ! source_healthy "${LX_URL}"; then need_start=1; fi
+if [ "${ENABLE_GOMUSICDL}" -eq 1 ] && ! source_healthy "${GOMUSICDL_URL}"; then need_start=1; fi
 if [ "${ENABLE_WEBUI}" -eq 1 ] && ! source_healthy "http://127.0.0.1:8774"; then need_start=1; fi
 
 # --- 原生形态：确保 unit 已安装、运行时依赖齐备，并按需重启对齐代码/.env ---
@@ -564,6 +584,10 @@ if [ "${ENABLE_MUSICDL}" -eq 1 ]; then
 fi
 if [ "${ENABLE_LX}" -eq 1 ]; then
     wait_source "lxmusic" "${LX_URL}" || exit 1
+fi
+if [ "${ENABLE_GOMUSICDL}" -eq 1 ]; then
+    # 适配层 healthz 已含 go 后端探活：通过即代表二进制与适配层都在
+    wait_source "gomusicdl" "${GOMUSICDL_URL}" 120 || exit 1
 fi
 if [ "${ENABLE_WEBUI}" -eq 1 ]; then
     wait_source "WebUI" "http://127.0.0.1:8774" || exit 1
@@ -705,7 +729,7 @@ log_info "3. 健康检查与运维："
 log_info "   • 探测状态: curl -s --unix-socket /var/run/trim_music.socket http://localhost/_ext/healthz"
 log_info "   • 查看日志: sudo journalctl -u fnmusic-ext -f"
 if [ "${ENABLE_WEBUI}" -eq 1 ]; then
-    log_info "   • 管理 WebUI: 飞牛桌面「fnMusic 扩展管理」（仅管理员；音源三选一/音质/推荐/LLM 运行期可调）"
+    log_info "   • 管理 WebUI: 飞牛桌面「fnMusic 扩展管理」（仅管理员；音源单选/音质/推荐/LLM 运行期可调）"
 fi
 log_info "   • 一键还原: ./restore.sh (一键无损切回官方原生直连)"
 log_info "============================================================"

@@ -131,7 +131,7 @@ class TestWizard:
         assert "wizard_webui_password" not in fields
         radio = next(it for it in items if it["type"] == "radio")
         values = {opt["value"] for opt in radio["options"]}
-        assert values == {"auto", "musicdl", "musicbox", "lxmusic"}
+        assert values == {"auto", "musicdl", "musicbox", "lxmusic", "gomusicdl"}
         assert radio["initValue"] == "auto"
 
     def test_fnpack_quirks(self, stage: Path):
@@ -261,6 +261,8 @@ class TestPayload:
             "online_favorites/user.json", "cache/track.mp3",
             "sources-data/session.json", "play_history/user.json",
             "recommend_cache/user.json", "public_playlists_cache/list.json",
+            # go-music-dl 运行期数据（settings.db 含 Cookie）不进包，预编译二进制必须进包
+            "gomusicdl-service/data/settings.db",
         )
         retained = (
             "lxmusic-service/verify_source.py", "lxmusic-service/source_runtime.py",
@@ -269,6 +271,8 @@ class TestPayload:
             "proxy/app.py", "webui-service/static/app.js", ".env.example",
             "webui-service/static/wechat.png", "webui-service/static/alipay.png",
             "container/config.json",
+            "gomusicdl-service/bin/music-dl-linux-amd64",
+            "gomusicdl-service/bin/SHA256SUMS",
         )
         for rel in (*excluded, *retained):
             path = source / rel

@@ -221,7 +221,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=fnmusic-images-${{ matrix.arch }}
       - name: Verify non-root contract for each bundled service
         run: |
-          for svc in musicdl netease lxmusic; do
+          for svc in musicdl netease lxmusic gomusicdl; do
             docker run --rm --platform '${{ matrix.platform }}' --network none --user 1000 --entrypoint python \
               -v "$PWD/tests/integration/production_contract.py:/tmp/production_contract.py:ro" \
               fnmusic-sources:ci /tmp/production_contract.py \

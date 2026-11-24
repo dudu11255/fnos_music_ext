@@ -18,6 +18,7 @@ HEALTH_HTTP_TIMEOUT="${HEALTH_HTTP_TIMEOUT:-3}"
 # 容器形态的固定内部端口；native 形态的服务借用 ENTRY 时由环境覆盖。
 LX_MUSIC_HEALTH_URL="${LX_MUSIC_HEALTH_URL:-http://127.0.0.1:8003/healthz}"
 LX_SERVER_HEALTH_URL="${LX_SERVER_HEALTH_URL:-http://127.0.0.1:8005/api/status}"
+GOMUSICDL_HEALTH_URL="${GOMUSICDL_HEALTH_URL:-http://127.0.0.1:8007/healthz}"
 
 running() {
     supervisorctl -c "$SUP_CONF" status "$1" 2>/dev/null | grep -q "RUNNING"
@@ -83,6 +84,20 @@ check_lx_http() {
 
 check musicdl FNMUSIC_MUSICDL_ENABLED
 check netease FNMUSIC_NETEASE_ENABLED
+# gomusicdl 链路：go 二进制 + 适配层都要在，适配层 /healthz 额外做 HTTP 探活
+if [ "$(env_flag FNMUSIC_GOMUSICDL_ENABLED)" = "true" ]; then
+    checked=$((checked + 1))
+    if ! running gomusicdl; then
+        echo "[healthcheck] gomusicdl 应运行但状态异常" >&2
+        fail=1
+    fi
+    if ! running gomusicdl-svc; then
+        echo "[healthcheck] gomusicdl-svc 应运行但状态异常" >&2
+        fail=1
+    elif ! check_lx_http gomusicdl-svc "$GOMUSICDL_HEALTH_URL"; then
+        fail=1
+    fi
+fi
 # 网易云歌单常驻（issue #38）：musicbox 非当前音源但常驻开启时应常驻运行。
 # 只捕捉崩溃循环（FATAL/BACKOFF）；webui 对账的主动停止（如未登录回收）属
 # 正常态，不算失败——避免 cookie 失效期间容器长期 unhealthy。

@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -38,8 +39,16 @@ def run_bash(body: str, env: dict | None = None, cwd: Path | None = None,
     env = dict(env or os.environ)
     if path:
         env["PATH"] = path
-    return subprocess.run([BASH, "-c", body], env=env, cwd=str(cwd) if cwd else None,
-                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+    # 脚本走临时文件而不是 bash -c：install.sh 的解析函数块已超 8KB，Windows 的
+    # MSYS bash 会把 -c 参数截断在 8192 字节，测试会以 "unexpected end of file"
+    # 假失败（Linux CI 不受影响，但本地 Windows 无法跑这套测试）。
+    with tempfile.TemporaryDirectory() as tmp:
+        script_path = Path(tmp) / "scenario.sh"
+        script_path.write_text(body, encoding="utf-8")
+        return subprocess.run([BASH, str(script_path)], env=env,
+                              cwd=str(cwd) if cwd else None,
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=90)
 
 
 def write_stub(bindir: Path, name: str, body: str) -> None:

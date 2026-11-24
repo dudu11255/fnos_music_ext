@@ -118,7 +118,7 @@ wait_ready() {
     return 1
 }
 
-# 三选一音源：只启动 .env 选中的那个（多开视为异常，全部忽略只取第一个命中）
+# 互斥单选音源：只启动 .env 选中的那个（多开视为异常，全部忽略只取第一个命中）
 if [ "$(env_flag FNMUSIC_MUSICDL_ENABLED)" = "true" ]; then
     start_prog musicdl
 elif [ "$(env_flag FNMUSIC_NETEASE_ENABLED)" = "true" ]; then
@@ -128,8 +128,16 @@ elif [ "$(env_flag FNMUSIC_LX_ENABLED)" = "true" ]; then
     start_prog lxmusic
     # 有界等待整条链路就绪；失败只记录，不停进程也不清空用户音源。
     wait_ready lxmusic "$LXMUSIC_HEALTH_URL" || true
+elif [ "$(env_flag FNMUSIC_GOMUSICDL_ENABLED)" = "true" ]; then
+    # 第四音源：go-music-dl（QQ/B站/汽水等）。go 二进制 + FastAPI 适配层成对启动。
+    # 数据目录按部署形态由 GOMUSICDL_DATA_DIR 指认（容器 /data/gomusicdl，
+    # native 为 sources-data/gomusicdl），不能在 native 上硬编码容器路径。
+    mkdir -p "${GOMUSICDL_DATA_DIR:-/data/gomusicdl}"
+    start_prog gomusicdl
+    start_prog gomusicdl-svc
+    wait_ready gomusicdl-svc "${GOMUSICDL_HEALTH_URL:-http://127.0.0.1:8007/healthz}" || true
 else
-    log "未配置任何音源（FNMUSIC_MUSICDL_ENABLED/FNMUSIC_NETEASE_ENABLED/FNMUSIC_LX_ENABLED 均未启用）"
+    log "未配置任何音源（FNMUSIC_MUSICDL_ENABLED/FNMUSIC_NETEASE_ENABLED/FNMUSIC_LX_ENABLED/FNMUSIC_GOMUSICDL_ENABLED 均未启用）"
 fi
 
 # 网易云歌单常驻（issue #38）：当前音源不是 musicbox 但勾选常驻，且有网易

@@ -9,6 +9,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 import pytest
@@ -435,8 +436,14 @@ def install_platform_block():
 
 
 def run_install_bash(body):
+    # 脚本走临时文件而不是 bash -c：平台表 + 解析函数块已超 8KB，Windows 的
+    # MSYS bash 会把 -c 参数截断在 8192 字节，测试会以"unexpected end of file"
+    # 假失败（CI 的 Linux 不受影响，但本地 Windows 跑不了这套测试）。
     script = 'set -euo pipefail\nlog_err() { printf "%s\\n" "$*" >&2; }\n' + body
-    return subprocess.run(['bash', '-c', script], text=True, capture_output=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'scenario.sh'
+        path.write_text(script, encoding='utf-8')
+        return subprocess.run(['bash', str(path)], text=True, capture_output=True)
 
 
 def test_parse_sources_platform_tokens():
@@ -501,8 +508,33 @@ def test_parse_sources_rejects_cross_provider_mix():
                 '1,2', '1,2,4,59,60,61,62', 'musicdl-kuwo,lx-kw'):
         result = run_install_bash(block + f'parse_sources "{raw}"')
         assert result.returncode != 0, raw
-        assert '音源三选一' in result.stderr, raw
+        assert '音源单选' in result.stderr, raw
         assert '互斥' in result.stderr, raw
+
+
+def test_parse_sources_accumulates_gomusicdl_platforms():
+    """go-music-dl 平台：多个 gomusicdl-* token 必须累加，裸平台名同源累加。"""
+    block = install_platform_block()
+    body = block + '''
+parse_sources "gomusicdl-qq,gomusicdl-bilibili"
+printf "multi %s [%s] %s\\n" "$ENABLE_GOMUSICDL" "$GOMD_PLATFORMS" "$GOMD_EXPLICIT"
+parse_sources "gomusicdl-qq,bilibili,soda"
+printf "bare %s [%s] %s\\n" "$ENABLE_GOMUSICDL" "$GOMD_PLATFORMS" "$GOMD_EXPLICIT"
+parse_sources "bilibili,gomusicdl-qq"
+printf "pre %s [%s]\\n" "$ENABLE_GOMUSICDL" "$GOMD_PLATFORMS"
+parse_sources "gomusicdl"
+printf "plain %s [%s] %s\\n" "$ENABLE_GOMUSICDL" "$GOMD_PLATFORMS" "$GOMD_EXPLICIT"
+parse_sources "gomusicdl-QQ,bilibili,qq"
+printf "upper [%s]\\n" "$GOMD_PLATFORMS"
+'''
+    result = run_install_bash(body)
+    assert result.returncode == 0, result.stderr
+    rows = result.stdout.splitlines()
+    assert rows[0] == 'multi 1 [qq,bilibili] 1'
+    assert rows[1] == 'bare 1 [qq,bilibili,soda] 1'
+    assert rows[2] == 'pre 1 [bilibili,qq]'
+    assert rows[3] == 'plain 1 [] 0'
+    assert rows[4] == 'upper [qq,bilibili]'
 
 
 def test_parse_sources_rejects_unknown_platforms():

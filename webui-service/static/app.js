@@ -19,8 +19,8 @@ const APP_BASE = "/app/fnmusic-ext";
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
-const PROVIDER_LABEL = { musicdl: "musicdl 聚合音源", netease: "网易云音乐", musicbox: "网易云音乐", lxmusic: "洛雪自定义源", none: "未配置" };
-const PROC_LABEL = { musicdl: "musicdl", netease: "netease", musicbox: "musicbox", lxserver: "lxserver", lxmusic: "lxmusic", webui: "WebUI" };
+const PROVIDER_LABEL = { musicdl: "musicdl 聚合音源", netease: "网易云音乐", musicbox: "网易云音乐", lxmusic: "洛雪自定义源", gomusicdl: "go-music-dl 音源", none: "未配置" };
+const PROC_LABEL = { musicdl: "musicdl", netease: "netease", musicbox: "musicbox", lxserver: "lxserver", lxmusic: "lxmusic", gomusicdl: "go-music-dl", "gomusicdl-svc": "go-music-dl 适配层", webui: "WebUI" };
 
 let configValues = {};   // GET /api/config 的 values
 let configPresence = {}; // .env 显式存在的键（区分默认空与管理员清空）
@@ -697,10 +697,16 @@ function applyConfigToForm() {
   const v = configValues;
   const provider = v.FNMUSIC_NETEASE_ENABLED === "true" ? "musicbox"
     : v.FNMUSIC_MUSICDL_ENABLED === "true" ? "musicdl"
-    : v.FNMUSIC_LX_ENABLED === "true" ? "lxmusic" : "";
+    : v.FNMUSIC_LX_ENABLED === "true" ? "lxmusic"
+    : v.FNMUSIC_GOMUSICDL_ENABLED === "true" ? "gomusicdl" : "";
   $$("input[name=provider]").forEach((el) => { el.checked = el.value === provider; });
   syncProviderPanels(provider);
   if (provider === "musicbox") syncNeteaseAccount();
+  const gomusicdlSourcesEl = $("#gomusicdl-sources");
+  if (gomusicdlSourcesEl) {
+    gomusicdlSourcesEl.disabled = !configSchema.FNMUSIC_GOMUSICDL_SOURCES;
+    gomusicdlSourcesEl.value = v.FNMUSIC_GOMUSICDL_SOURCES || "qq,bilibili,soda";
+  }
   const hasAutoSwitch = Boolean(configSchema.FNMUSIC_LX_AUTO_SWITCH);
   const hasPlatformPreferred = Boolean(configSchema.FNMUSIC_LX_PLATFORM_PREFERRED);
   $("#lx-auto-switch").disabled = !hasAutoSwitch;
@@ -851,6 +857,9 @@ function collectConfig() {
     FNMUSIC_MUSICDL_ENABLED: provider === "musicdl",
     FNMUSIC_NETEASE_ENABLED: provider === "musicbox",
     FNMUSIC_LX_ENABLED: provider === "lxmusic",
+    FNMUSIC_GOMUSICDL_ENABLED: provider === "gomusicdl",
+    ...(provider === "gomusicdl" && configSchema.FNMUSIC_GOMUSICDL_SOURCES
+      ? { FNMUSIC_GOMUSICDL_SOURCES: $("#gomusicdl-sources").value.trim() || "qq,bilibili,soda" } : {}),
     ...(configSchema.FNMUSIC_NETEASE_DIRECT_PLAY ? { FNMUSIC_NETEASE_DIRECT_PLAY: $("#direct-netease").checked } : {}),
     ...(configSchema.FNMUSIC_MUSICDL_DIRECT_PLAY ? { FNMUSIC_MUSICDL_DIRECT_PLAY: $("#direct-musicdl").checked } : {}),
     ...(configSchema.FNMUSIC_LX_DIRECT_PLAY ? { FNMUSIC_LX_DIRECT_PLAY: $("#direct-lx").checked } : {}),
@@ -1153,6 +1162,7 @@ function syncProviderPanels(provider) {
   $("#panel-musicbox").hidden = provider !== "musicbox";
   $("#panel-musicdl").hidden = provider !== "musicdl";
   $("#panel-lxmusic").hidden = provider !== "lxmusic";
+  $("#panel-gomusicdl").hidden = provider !== "gomusicdl";
 }
 $$("input[name=provider]").forEach((el) =>
   el.addEventListener("change", async () => {

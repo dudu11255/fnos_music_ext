@@ -1,8 +1,8 @@
-; fnmusic-ext 原生（无 Docker）音源进程表：五个程序全部 autostart=false，
+; fnmusic-ext 原生（无 Docker）音源进程表：七个程序全部 autostart=false，
 ; 由 container/entrypoint.sh 按 .env 的启用开关 supervisorctl start（按需加载）。
 ; 与容器形态（container/supervisord.conf）一一对应，差异仅在：
-;   1. 服务直接监听宿主发布端口 8768/8770/8772/8774（容器内为 8001-8004 由 docker 映射），
-;      proxy 侧 .env 的音源 URL 与 healthz 契约完全不变；
+;   1. 服务直接监听宿主发布端口 8768/8770/8772/8774/8776（容器内为 8001-8004/8007 由 docker 映射），
+;      proxy 侧 .env 的音源 URL 与 healthz 契约完全不变（gomusicdl 的 go 后端 8778 仅本机）；
 ;   2. 代码/数据直接指向宿主目录（@REPO@ / @DATA@），无容器内 /srv /repo /data 路径；
 ;   3. supervisor 经 .venv-sources 的 pip 包提供，套接字/pid/日志收在 @RUN@。
 ; 占位符由 proxy/install_common.sh 的 render_native_supervisor_conf 渲染。
@@ -102,4 +102,36 @@ killasgroup=true
 stdout_logfile=@RUN@/webui.log
 stdout_logfile_maxbytes=0
 redirect_stderr=true
-environment=WEBUI_REPO_DIR="@REPO@",WEBUI_MUSICDL_URL="http://127.0.0.1:8768",WEBUI_MUSICBOX_URL="http://127.0.0.1:8770",WEBUI_LX_URL="http://127.0.0.1:8772",WEBUI_SUPERVISORCTL="supervisorctl -c @RUN@/supervisord.conf"
+environment=WEBUI_REPO_DIR="@REPO@",WEBUI_MUSICDL_URL="http://127.0.0.1:8768",WEBUI_MUSICBOX_URL="http://127.0.0.1:8770",WEBUI_LX_URL="http://127.0.0.1:8772",WEBUI_GOMUSICDL_URL="http://127.0.0.1:8776",WEBUI_SUPERVISORCTL="supervisorctl -c @RUN@/supervisord.conf"
+
+; gomusicdl 链路（原生）：预编译 go 二进制在宿主 8778 监听，适配层 8776 对外。
+; command 用 run-music-dl.sh：按 CPU 架构选二进制、自愈可执行位，并按
+; GOMUSICDL_DATA_DIR mkdir + cd（supervisord 的 directory 必须是已存在目录，
+; 所以指向代码目录，数据目录交给脚本创建）。
+[program:gomusicdl]
+directory=@REPO@/gomusicdl-service
+command=/bin/sh "@REPO@/gomusicdl-service/bin/run-music-dl.sh"
+environment=GOMUSICDL_GO_PORT="8778",GOMUSICDL_DATA_DIR="@DATA@/gomusicdl"
+autostart=false
+autorestart=true
+startretries=5
+stopsignal=TERM
+stopasgroup=true
+killasgroup=true
+stdout_logfile=@RUN@/gomusicdl.log
+stdout_logfile_maxbytes=0
+redirect_stderr=true
+
+[program:gomusicdl-svc]
+directory=@REPO@/gomusicdl-service
+command="@VENV@/bin/uvicorn" app:app --host 127.0.0.1 --port 8776
+environment=GOMUSICDL_GO_URL="http://127.0.0.1:8778",GOMUSICDL_ENV_FILE="@REPO@/.env"
+autostart=false
+autorestart=true
+startretries=5
+stopsignal=TERM
+stopasgroup=true
+killasgroup=true
+stdout_logfile=@RUN@/gomusicdl-svc.log
+stdout_logfile_maxbytes=0
+redirect_stderr=true

@@ -60,7 +60,7 @@ def session(req, items):
 async def test_livez_never_constructs_dependency_clients(monkeypatch):
     def forbidden(*args):
         pytest.fail("liveness must not touch dependencies")
-    for name in ("get_upstream_client", "get_musicdl_client", "get_musicbox_client", "get_lx_client"):
+    for name in ("get_upstream_client", "get_musicdl_client", "get_gomusicdl_client", "get_musicbox_client", "get_lx_client"):
         monkeypatch.setattr(p, name, forbidden)
     assert await p.ext_livez() == {"ok": True, "service": "fnmusic-ext", "pid": os.getpid()}
 
@@ -72,15 +72,16 @@ async def test_health_concurrent_wall_clock_budget(monkeypatch):
         started.append(time.monotonic())
         await asyncio.sleep(30)
     clients = []
-    for getter in ("get_upstream_client", "get_musicdl_client", "get_musicbox_client", "get_lx_client"):
+    for getter in ("get_upstream_client", "get_musicdl_client", "get_gomusicdl_client", "get_musicbox_client", "get_lx_client"):
         client = httpx.AsyncClient(transport=httpx.MockTransport(stalled), base_url="http://test")
         clients.append(client)
         monkeypatch.setattr(p, getter, lambda app, c=client: c)
+    monkeypatch.setitem(p.CONF, "gomusicdl_enabled", True)
     before = time.monotonic()
     result = await p.ext_healthz(request())
     elapsed = time.monotonic() - before
     assert 2.3 < elapsed < 2.65
-    assert len(started) == 4 and max(started) - min(started) < .1
+    assert len(started) == 5 and max(started) - min(started) < .1
     assert not result["ok"] and result["degraded"]
     assert all(x["error"] == "TimeoutError" for x in result["details"].values())
     for client in clients:

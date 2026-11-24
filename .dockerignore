@@ -5,6 +5,10 @@
 netease-service/node_modules/
 !lxmusic-service/
 !webui-service/
+# gomusicdl 适配层 + 预编译 go 二进制（Dockerfile 的 COPY 依赖本目录进构建上下文）
+!gomusicdl-service/
+# 运行期数据（settings.db 含 Cookie/设置、video_output 为下载产物）绝不进镜像
+gomusicdl-service/data/
 !container/
 !VERSION
 !RELEASE_CHANNEL

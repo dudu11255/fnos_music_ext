@@ -64,7 +64,7 @@ def check_netease(app_dir: Path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("service", choices=["musicdl", "netease", "lxmusic", "musicbox"])
+    parser.add_argument("service", choices=["musicdl", "netease", "lxmusic", "musicbox", "gomusicdl"])
     parser.add_argument("--app-dir", type=Path, required=True)
     parser.add_argument("--require-non-root", action="store_true")
     args = parser.parse_args()
@@ -86,6 +86,19 @@ def main():
                 import curl_cffi
                 assert callable(musicdl.MusicClient)
                 assert curl_cffi.requests.Session
+            elif args.service == "gomusicdl":
+                # 适配层契约：端点齐全；go 后端故意指向必然连不通的地址，
+                # /healthz 必须如实报不健康（不得出现"进程在就永远绿"的假绿）。
+                from fastapi.testclient import TestClient
+
+                module.GO_URL = "http://127.0.0.1:9"
+                paths = {route.path for route in module.app.routes}
+                for path in ("/healthz", "/sources", "/search", "/info", "/stream"):
+                    assert path in paths, f"缺少端点 {path}"
+                with TestClient(module.app) as client:
+                    resp = client.get("/healthz")
+                assert resp.status_code == 503, resp.status_code
+                assert resp.json().get("ok") is False
             else:
                 from lxserver_client import SUPPORTED_PLATFORMS
                 from verify_source import parse_script_meta

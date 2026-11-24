@@ -27,7 +27,8 @@ def supervisord_conf():
 def test_supervisord_programs_all_autostart_false(supervisord_conf):
     programs = sorted(s for s in supervisord_conf.sections() if s.startswith("program:"))
     assert programs == [
-        "program:lxmusic", "program:lxserver", "program:musicdl", "program:netease", "program:webui",
+        "program:gomusicdl", "program:gomusicdl-svc", "program:lxmusic", "program:lxserver",
+        "program:musicdl", "program:netease", "program:webui",
     ]
     for section in programs:
         assert supervisord_conf.get(section, "autostart") == "false"
@@ -74,6 +75,18 @@ def test_supervisord_ports_and_directories(supervisord_conf):
     assert 'LXSERVER_DATA_DIR="/data/lxserver"' in lxmusic_env
     assert 'LXSERVER_DIR="/srv/lxserver"' in lxmusic_env
     assert 'FNMUSIC_NODE_BIN="/usr/local/bin/node"' in lxmusic_env
+
+    # gomusicdl 链路：go 二进制（8006）+ 适配层（8007）成对存在；数据目录落数据卷，
+    # directory 固定在代码目录（数据目录可能尚未创建，chdir 失败会直接 FATAL）
+    go_sec = "program:gomusicdl"
+    assert supervisord_conf.get(go_sec, "directory") == "/srv/gomusicdl-service"
+    assert supervisord_conf.get(go_sec, "command").endswith("/bin/run-music-dl.sh")
+    assert 'GOMUSICDL_GO_PORT="8006"' in supervisord_conf.get(go_sec, "environment")
+    assert 'GOMUSICDL_DATA_DIR="/data/gomusicdl"' in supervisord_conf.get(go_sec, "environment")
+    go_svc_sec = "program:gomusicdl-svc"
+    assert "--port 8007" in supervisord_conf.get(go_svc_sec, "command")
+    assert supervisord_conf.get(go_svc_sec, "directory") == "/srv/gomusicdl-service"
+    assert 'GOMUSICDL_GO_URL="http://127.0.0.1:8006"' in supervisord_conf.get(go_svc_sec, "environment")
 
 
 def test_supervisord_daemon_section(supervisord_conf):
@@ -341,6 +354,7 @@ def test_compose_single_service_layout():
         "127.0.0.1:8770:8002",
         "127.0.0.1:8772:8003",
         "127.0.0.1:8774:8004",
+        "127.0.0.1:8776:8007",
     ])
     raw = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert "0.0.0.0:8770" not in raw
@@ -389,7 +403,7 @@ def test_dockerfile_assembly():
     assert "lxmusic-service/js/bridge.js" not in text
     assert text.count("HEALTHCHECK") >= 1
     assert 'ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]' in text
-    assert "EXPOSE 8001 8002 8003 8004" in text
+    assert "EXPOSE 8001 8002 8003 8004 8006 8007" in text
     # 非特权运行
     assert "USER appuser" in text
     # 数据卷与仓库挂载点；目录不可 world-writable（bind 挂载后跟宿主机权限）
@@ -457,8 +471,51 @@ def test_dockerignore_whitelist_build_context():
     code_lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
     # 白名单模式：先忽略一切，再放行四个服务目录与 container/
     assert code_lines[0] == "*"
-    for keep in ("!musicdl-service/", "!netease-service/", "!lxmusic-service/", "!webui-service/", "!container/"):
+    for keep in ("!musicdl-service/", "!netease-service/", "!lxmusic-service/",
+                 "!webui-service/", "!gomusicdl-service/", "!container/"):
         assert keep in code_lines
+
+
+def test_dockerfile_copy_sources_are_whitelisted_in_build_context():
+    """Dockerfile 里 COPY 的每个顶层路径都必须在 .dockerignore 白名单里。
+
+    回归：.dockerignore 采用「先全部忽略、再白名单放行」后，只加 COPY 而忘记
+    放行目录，构建会在 COPY 阶段直接失败（gomusicdl-service 就踩过一次）。
+    """
+    text = (CONTAINER_DIR / "Dockerfile").read_text(encoding="utf-8")
+    # 折叠续行，`COPY a b \\\n c /dest/` 归成一条语句
+    statements: list[str] = []
+    buffer = ""
+    for line in text.splitlines():
+        if buffer:
+            line = buffer + " " + line.strip()
+            buffer = ""
+        if line.rstrip().endswith("\\"):
+            buffer = line.rstrip()[:-1]
+            continue
+        statements.append(line)
+
+    ignore = [ln for ln in (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+              if ln.strip() and not ln.lstrip().startswith("#")]
+    allowed = {ln.lstrip("!").rstrip("/") for ln in ignore if ln.startswith("!")}
+
+    checked = 0
+    for line in statements:
+        if not line.startswith("COPY "):
+            continue
+        tokens = [t for t in line.split()[1:] if not t.startswith("--")]
+        if len(tokens) < 2:
+            continue
+        for source in tokens[:-1]:
+            # 多阶段构建的 --from 来源是镜像内路径，不属于构建上下文
+            if source.startswith("/"):
+                continue
+            top = source.rstrip("/").split("/")[0]
+            if top in ("", "."):
+                continue
+            checked += 1
+            assert top in allowed, f"{source} 未在 .dockerignore 白名单放行（{top}）"
+    assert checked >= 10, "未解析到预期数量的 COPY 源路径"
 
 
 def _imported_proxy_modules(path: Path, *, relative_to_proxy: bool = False) -> set[str]:

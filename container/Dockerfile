@@ -103,6 +103,7 @@ RUN set -eu; \
 COPY musicdl-service/requirements.txt /srv/req.musicdl
 COPY lxmusic-service/requirements.txt /srv/req.lxmusic
 COPY webui-service/requirements.txt /srv/req.webui
+COPY gomusicdl-service/requirements.txt /srv/req.gomusicdl
 RUN set -eu; \
     fix_dns() { \
         { \
@@ -112,15 +113,15 @@ RUN set -eu; \
         cat /tmp/resolv.fnmusic > /etc/resolv.conf 2>/dev/null || true; \
     }; \
     fix_dns; \
-    pip install --no-cache-dir -r /srv/req.musicdl -r /srv/req.lxmusic -r /srv/req.webui \
+    pip install --no-cache-dir -r /srv/req.musicdl -r /srv/req.lxmusic -r /srv/req.webui -r /srv/req.gomusicdl \
     || { echo "[WARN] pip 镜像源（${PIP_INDEX_URL}）安装失败，回退官方 PyPI 重试..." >&2; \
          pip install --no-cache-dir -i https://pypi.org/simple \
-            -r /srv/req.musicdl -r /srv/req.lxmusic -r /srv/req.webui; } \
+            -r /srv/req.musicdl -r /srv/req.lxmusic -r /srv/req.webui -r /srv/req.gomusicdl; } \
     && rm -f /srv/req.*
 
 RUN groupadd -g 1000 appuser \
     && useradd -m -u 1000 -g 1000 appuser \
-    && mkdir -p /data/cache /data/config /data/lxmusic /data/lxserver /data/lxserver-meta /data/logs \
+    && mkdir -p /data/cache /data/config /data/lxmusic /data/lxserver /data/lxserver-meta /data/logs /data/gomusicdl \
     && chown -R appuser:appuser /data
 
 # 洛雪发行包只留在准备阶段。最终镜像只复制解压后的运行目录，
@@ -216,6 +217,14 @@ COPY --chown=appuser:appuser \
     /srv/lxmusic-service/
 COPY --chown=appuser:appuser webui-service/app.py webui-service/config_jobs.py /srv/webui-service/
 COPY --chown=appuser:appuser webui-service/static/ /srv/webui-service/static/
+
+# gomusicdl 链路：适配层代码 + 按架构预编译的 go 二进制（music-dl web）。
+# 二进制为仓库内置（约 35MB/个），构建期用 bin/SHA256SUMS 校验来源与完整性，
+# 升级/重建步骤见 gomusicdl-service/README.md（含所需上游补丁说明）。
+COPY --chown=appuser:appuser gomusicdl-service/app.py /srv/gomusicdl-service/
+COPY --chown=appuser:appuser gomusicdl-service/bin/ /srv/gomusicdl-service/bin/
+RUN chmod 0755 /srv/gomusicdl-service/bin/run-music-dl.sh /srv/gomusicdl-service/bin/music-dl-linux-amd64 /srv/gomusicdl-service/bin/music-dl-linux-arm64 \
+    && cd /srv/gomusicdl-service/bin && sha256sum --check --quiet SHA256SUMS
 # webui/lxmusic/musicbox 复用 proxy 模块（.env 安全合并 + 统一日志 fnlog），必须随镜像分发
 COPY --chown=appuser:appuser proxy/__init__.py proxy/direct_play.py proxy/env_merge.py proxy/fnlog.py proxy/llm_usage.py proxy/media_url.py proxy/netease_legacy.py proxy/publicplaylists.py proxy/quality_policy.py proxy/userstorage.py proxy/version.py /srv/proxy/
 COPY --chown=appuser:appuser VERSION RELEASE_CHANNEL /srv/
@@ -232,7 +241,7 @@ RUN chmod 0755 /usr/local/bin/env_flag.sh /usr/local/bin/entrypoint.sh /usr/loca
     && chmod 0644 /etc/supervisor/supervisord.conf
 
 USER appuser
-EXPOSE 8001 8002 8003 8004
+EXPOSE 8001 8002 8003 8004 8006 8007
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD ["/usr/local/bin/healthcheck.sh"]

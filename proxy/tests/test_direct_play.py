@@ -355,3 +355,61 @@ async def test_generation_change_prevents_stale_publication(monkeypatch):
     monkeypatch.setattr(proxy_app, "_resolve_direct_target", resolve)
     response = await proxy_app._direct_redirect_response(make_request("GET"), "online:lx:kg:1")
     assert response.status_code == 409
+
+
+def configure_musicdl_direct(monkeypatch):
+    monkeypatch.setitem(proxy_app.CONF, "musicdl_direct_play", True)
+    monkeypatch.setattr(proxy_app, "_DIRECT_TARGET_BINDINGS", DirectTargetBindings(max_entries=8))
+    monkeypatch.setattr(proxy_app, "_DIRECT_FILE_BINDINGS", FileTargetBindings(max_entries=8))
+    monkeypatch.setattr(proxy_app, "_DIRECT_PLAY_GENERATIONS", dict(proxy_app._DIRECT_PLAY_GENERATIONS))
+    monkeypatch.setattr(proxy_app, "_source_enabled", lambda _guid: True)
+    async def auth(_request):
+        return True
+    monkeypatch.setattr(proxy_app, "_strict_direct_play_auth", auth)
+    monkeypatch.setattr(
+        proxy_app, "validate_media_url",
+        lambda _url, **_kwargs: MediaURLDecision(True, host="cdn.example"))
+    monkeypatch.setattr(proxy_app, "_register_background_fetch", lambda *_args, **_kwargs: False)
+
+
+@pytest.mark.asyncio
+async def test_gomusicdl_source_skips_leftover_musicdl_direct_play(monkeypatch):
+    """切到 gomusicdl 后残留的 musicdl 直连开关不得把请求打到已停止的 musicdl。
+
+    musicdl 直连是独立的热重载开关，切源不会自动关掉；gomusicdl 源若照旧走
+    musicdl 的 /internal/resolve 会稳定 502，必须直接回落到流式透传。
+    """
+    configure_musicdl_direct(monkeypatch)
+    monkeypatch.setitem(proxy_app.CONF, "musicdl_enabled", False)
+    monkeypatch.setitem(proxy_app.CONF, "gomusicdl_enabled", True)
+    monkeypatch.setitem(proxy_app.CONF, "gomusicdl_sources", "qq,bilibili,soda")
+    called = []
+
+    async def resolve(*args):
+        called.append(args)
+        item = target(proxy_app._DIRECT_PLAY_GENERATIONS["musicdl"])
+        item.provider = "musicdl"
+        return item
+
+    monkeypatch.setattr(proxy_app, "_resolve_direct_target", resolve)
+    response = await proxy_app._direct_redirect_response(make_request("GET"), "online:qq:5257138")
+    assert response is None, "gomusicdl 源不应进入 musicdl 直连解析"
+    assert called == []
+
+
+@pytest.mark.asyncio
+async def test_musicdl_source_still_direct_plays_when_gomusicdl_disabled(monkeypatch):
+    """未启用 gomusicdl 时 musicdl 直连行为不变（回归保护）。"""
+    configure_musicdl_direct(monkeypatch)
+    monkeypatch.setitem(proxy_app.CONF, "musicdl_enabled", True)
+    monkeypatch.setitem(proxy_app.CONF, "gomusicdl_enabled", False)
+    monkeypatch.setitem(proxy_app.CONF, "gomusicdl_sources", "qq,bilibili,soda")
+
+    async def resolve(*_args):
+        item = target(proxy_app._DIRECT_PLAY_GENERATIONS["musicdl"])
+        item.provider = "musicdl"
+        return item
+
+    monkeypatch.setattr(proxy_app, "_resolve_direct_target", resolve)
+    response = await proxy_app._direct_redirect_response(make_request("GET"), "online:qq:5257138")
+    assert response.status_code == 302

@@ -270,7 +270,7 @@ def test_put_rejects_multi_provider(env_file):
     with authed_client() as client:
         r = client.put("/api/config", json={"values": {"FNMUSIC_LX_ENABLED": "true"}})
         assert r.status_code == 400
-        assert "三选一" in r.json()["error"]
+        assert "音源单选" in r.json()["error"]
 
 
 def test_put_rejects_zero_provider(env_file):
@@ -1503,7 +1503,8 @@ def test_status_aggregates_processes_and_health(env_file, svctl, monkeypatch):
         # lxserver 与 lxmusic 并列出现在进程概览，便于定位洛雪链路哪一环故障
         assert rj["processes"]["lxserver"]["state"] == "STOPPED"
         assert rj["processes"]["lxmusic"]["state"] == "STOPPED"
-        assert set(rj["processes"]) == {"musicdl", "musicbox", "lxserver", "lxmusic", "webui"}
+        assert set(rj["processes"]) == {"gomusicdl", "gomusicdl-svc", "musicdl", "musicbox",
+                                        "lxserver", "lxmusic", "webui"}
         assert rj["services"]["musicbox"]["reachable"] is True
         assert rj["services"]["lxmusic"]["note"]  # 未启用提示
         assert rj["lx_source"] is None
@@ -3525,3 +3526,67 @@ def test_scan_timing_ui_bindings():
     assert 'FNMUSIC_SCAN_DELAY_S: parseFloat($("#scan-delay").value)' in js
     assert 'FNMUSIC_SCAN_COOLDOWN_S: parseFloat($("#scan-cooldown").value)' in js
     assert "updateScanLabels" in js
+
+
+def test_status_gomusicdl_provider_probes_adapter_and_lists_sources(env_file, monkeypatch):
+    """切到 gomusicdl：进程层含 go + 适配层，HTTP 探适配层，列源走它自己的 /sources。
+
+    回归：状态页曾把非网易/非洛雪源一律当 musicdl，gomusicdl 启用后状态页
+    看不到当前服务、还把列表层错误指向已停止的 musicdl（/sources 全红）。
+    """
+    monkeypatch.setitem(webui.CONF, "gomusicdl_url", "http://gomd.test:8007")
+    env_file.write_text("FNMUSIC_GOMUSICDL_ENABLED='true'\n", encoding="utf-8")
+    calls: list[tuple[str, str]] = []
+
+    def handler(request):
+        calls.append((request.url.host, request.url.path))
+        if request.url.path == "/healthz":
+            return httpx.Response(200, json={"ok": True, "go": {"ok": True}, "sources": ["qq"]})
+        if request.url.path == "/sources":
+            return httpx.Response(200, json={"enabled": ["qq", "soda"], "registered": ["qq"], "go_ok": True})
+        return httpx.Response(404, json={"error": "not found"})
+
+    _mock_http(handler)
+    monkeypatch.setattr(webui, "supervisor_status", lambda **kwargs: {
+        "gomusicdl": {"state": "RUNNING", "detail": ""},
+        "gomusicdl-svc": {"state": "RUNNING", "detail": ""},
+    })
+    with authed_client() as client:
+        res = client.get("/api/status")
+    assert res.status_code == 200
+    st = res.json()
+    assert st["current_provider"] == "gomusicdl"
+    assert {"gomusicdl", "gomusicdl-svc"} <= set(st["processes"])
+    assert st["processes"]["gomusicdl-svc"]["state"] == "RUNNING"
+    assert st["health"]["process"]["ok"] is True
+    assert st["health"]["http"]["ok"] is True
+    assert st["health"]["list"]["ok"] is True
+    assert ("gomd.test", "/sources") in calls
+    # 不能再去打 musicdl 的端口
+    assert not [c for c in calls if c[0] not in ("gomd.test", "testserver")]
+
+
+def test_layered_health_gomusicdl_go_backend_down_blocks_list_layer(env_file, monkeypatch):
+    """适配层自报 go 后端不健康（503）时，状态页结论必须是红灯，不进入列表层。"""
+    monkeypatch.setitem(webui.CONF, "gomusicdl_url", "http://gomd.test:8007")
+    env_file.write_text("FNMUSIC_GOMUSICDL_ENABLED='true'\n", encoding="utf-8")
+    calls: list[str] = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.path == "/healthz":
+            return httpx.Response(503, json={"ok": False, "go": {"ok": False, "detail": "ConnectError"}})
+        return httpx.Response(200, json={"enabled": ["qq"]})
+
+    _mock_http(handler)
+    monkeypatch.setattr(webui, "supervisor_status", lambda **kwargs: {
+        "gomusicdl": {"state": "RUNNING", "detail": ""},
+        "gomusicdl-svc": {"state": "RUNNING", "detail": ""},
+    })
+    with authed_client() as client:
+        res = client.get("/api/status")
+    st = res.json()
+    assert st["health"]["process"]["ok"] is True
+    assert st["health"]["http"]["ok"] is False
+    assert st["health"]["list"]["ok"] is False
+    assert "/sources" not in calls

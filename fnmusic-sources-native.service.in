@@ -20,6 +20,8 @@ Environment="FNMUSIC_ENV_FILE=@REPO@/.env"
 Environment="DATA_PATH=@DATA@/lxserver"
 Environment="LXSERVER_META_DATA_DIR=@DATA@/lxserver-meta"
 Environment="LX_DATA_DIR=@DATA@/lxmusic"
+Environment="GOMUSICDL_DATA_DIR=@DATA@/gomusicdl"
+Environment="GOMUSICDL_HEALTH_URL=http://127.0.0.1:8776/healthz"
 Environment="FNMUSIC_LOG_DIR=@REPO@/logs"
 ExecStart=/bin/bash "@REPO@/container/entrypoint.sh"
 TimeoutStartSec=75

@@ -96,6 +96,18 @@ def test_source_display_prefix_mapping(monkeypatch):
     assert source_display_prefix("lx") == "[lx] "
 
 
+def test_source_display_prefix_gomusicdl(monkeypatch):
+    """gomusicdl 启用的平台用 [go] 标注，与 musicdl 的 [dl] 区分。"""
+    monkeypatch.setitem(CONF, "gomusicdl_enabled", False)
+    monkeypatch.setitem(CONF, "gomusicdl_sources", "qq,bilibili,soda")
+    assert source_display_prefix("qq") == "[dl] "  # 未启用 gomusicdl 时仍是 musicdl 语义
+    monkeypatch.setitem(CONF, "gomusicdl_enabled", True)
+    assert source_display_prefix("qq") == "[go] "
+    assert source_display_prefix("bilibili") == "[go] "
+    assert source_display_prefix("kuwo") == "[dl] "  # 不在 gomusicdl 白名单
+    assert strip_source_tag("[go] 屋顶") == "屋顶"
+
+
 def test_source_display_prefix_multi_active(monkeypatch):
     """多源同时激活：列表 active 标记决定备注；≥2 个激活时无法归属单曲，回退 [lx]。"""
     # 恰好 1 个 active → 备注名

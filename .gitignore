@@ -57,3 +57,7 @@ packaging/fpk/.build/
 .webui_jobs.db
 openspec/
 node_modules/
+# gomusicdl 运行期数据（settings.db 存 Cookie/设置、video_output 为下载产物）：
+# 容器落在 /data/gomusicdl、native 落在 sources-data/gomusicdl，两个位置都不入库
+gomusicdl-service/data/
+.workbuddy

@@ -95,10 +95,11 @@ sudo appcenter-cli uninstall fnmusic-ext                # 卸载（自动备份�
 
 向导自动执行环境预检，依次引导：
 
-1. **音源三选一**（v2.0.0 起互斥单选）：
+1. **音源单选**（v2.0.0 起互斥单选）：
    - `1` 网易云 musicbox：安装后自动进入扫码登录；
    - `2` musicdl：进入平台多选子菜单（默认精选酷我+咪咕；全部平台编号见 [../musicdl-service/PLATFORMS.md](../musicdl-service/PLATFORMS.md)）；
    - `3` 洛雪 lxmusic：直接安装（无源状态），源脚本装好在管理页 WebUI 配置；也可在安装命令附 `--lx-source-url`（URL / 本机 `.js` 路径），安装时进行「下载→初始化→搜索→解析→探活」全链路校验；
+   - `4` go-music-dl gomusicdl：内置 go 二进制 + 适配层，默认平台 `qq,bilibili,soda`，回车确认或输入自己的平台白名单（`qq/bilibili/soda/kugou/kuwo/migu/...`）；
 2. **是否安装管理 WebUI**（仅本机 8774，默认否；打开时走飞牛管理员登录）；
 3. **大模型接口（可选）**：OpenAI 兼容 API；仅保存接口不会启用用途。安装后在管理页明确勾选「大模型用于猜你喜欢 / 每日推荐」，两个用途默认都关闭；
 4. **一键启用**：确认后自动调用 `./extend.sh` 接管验收。
@@ -111,6 +112,10 @@ sudo appcenter-cli uninstall fnmusic-ext                # 卸载（自动备份�
 
 # musicdl（酷我+咪咕；平台粒度用短名或编号）
 ./install.sh --non-interactive --sources musicdl-kuwo,musicdl-migu --extend
+
+# go-music-dl（默认平台 qq,bilibili,soda；也可写成 gomusicdl-qq,bilibili,soda）
+./install.sh --non-interactive --sources gomusicdl --webui --extend
+./install.sh --non-interactive --sources gomusicdl-qq,bilibili,soda --extend
 
 # 洛雪自定义源（--lx-source-url 可选：http(s) URL / 本机 .js 路径 / 留空无源安装）
 ./install.sh --non-interactive --sources lxmusic \
@@ -125,7 +130,7 @@ sudo appcenter-cli uninstall fnmusic-ext                # 卸载（自动备份�
   --llm-api-key '<KEY>' --llm-model 'gpt-4o-mini' --extend
 ```
 
-常用参数：`--sources`（音源三选一）、`--lx-source-url`（可选：http(s) URL 或
+常用参数：`--sources`（音源单选）、`--lx-source-url`（可选：http(s) URL 或
 宿主机 `.js` 路径，路径会自动复制进数据卷）、`--lx-skip-verify`
 （跳过洛雪源可用性校验直接激活，源是否可用装好后在管理页 WebUI 查看）、
 `--webui` / `--no-webui`、`--extend`（安装后自动接管）、`--deploy docker|native`
@@ -425,7 +430,7 @@ v2.0.0 结构变化较大（三容器→单容器、数据目录迁移、配置�
 `.env` 与数据保留）→ `./install.sh` 全新安装。直接原地升级同样支持。
 
 v1.x 允许多音源并存，v2.0.0 起三音源互斥单选。升级安装时检测到旧 `.env` 多源
-并存会要求重新三选一（非交互需 `--sources` 指定唯一音源）。此后换源在 WebUI
+并存会要求重新单选（非交互需 `--sources` 指定唯一音源）。此后换源在 WebUI
 里秒级完成，不必重装。
 
 ### 洛雪源测试失败
