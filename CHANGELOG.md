@@ -5,6 +5,26 @@
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-11-24
+
+本版本为正式版本。
+
+### 新增
+- 新增第四音源 go-music-dl（`gomusicdl`）：以 Go 二进制直连各平台官方接口，补齐 musicdl 库覆盖不到的 QQ、B站、汽水等音源，默认白名单 `qq,bilibili,soda`。
+- 管理页新增 gomusicdl 音源开关与「启用平台」配置（`FNMUSIC_GOMUSICDL_SOURCES`），保存后热生效；音源健康探活同时校验 go 后端与适配层。
+- 在线结果以 `[go]` 前缀区分 gomusicdl 与 musicdl 聚合结果，入库、收藏与下载命名前同样剥离，不污染文件名。
+- 安装器支持 `--sources gomusicdl[-平台]`（如 `--sources gomusicdl-qq,bilibili`），交互向导新增第 4 项；覆盖安装时保留存量音源选择。
+
+### 修复
+- 保留在线歌手搜索结果的 ID 映射，修复代理重启后打开「刀郎」等歌手的搜索结果显示「歌手不存在」的问题。单曲中的歌手在核实身份后也保持原入口 ID，避免详情无法显示。（#146）
+- 修复网络盘可写性探测失败后遗留临时文件的问题。（#150）
+
+### 安装与维护
+- FPK 体积将明显增大：内置 go-music-dl 的 amd64/arm64 预编译二进制（约 35MB/个），构建期用 `bin/SHA256SUMS` 校验完整性；升级二进制须同步更新校验和与上游补丁说明。
+- gomusicdl 仍是「主音源互斥单选」中的一项，与 musicdl、网易云、洛雪四选一，可在管理页切换。
+- 汽水会员曲目需在 go 侧配置 Cookie；gomusicdl 不参与播放直连（302）。
+- 三个安装包怎么选？见 [我该选择哪一个安装包？](https://github.com/javycoder/fnos_music_ext/blob/main/docs/INSTALL.md#which-fpk)。
+
 ## [3.2.2] - 2026-11-22
 
 本版本为正式版本。
